@@ -6,7 +6,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 
-import httpx
+import httpx2
 from fastapi import Response
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
@@ -66,7 +66,7 @@ class Router:
     def __init__(
         self,
         routes: RoutesConfig,
-        client: httpx.AsyncClient,
+        client: httpx2.AsyncClient,
         cooldown: Cooldown,
         hooks: list[Hook] | None = None,
     ):
@@ -129,7 +129,7 @@ class Router:
             request = build_request(self.client, self.routes.backends[dep.backend], dep, body)
             try:
                 resp = await self.client.send(request)
-            except httpx.TransportError as exc:
+            except httpx2.TransportError as exc:
                 self._failed(dep, outcome, exc)
                 continue
             if is_retryable(resp.status_code):
@@ -162,7 +162,7 @@ class Router:
             request = build_request(self.client, self.routes.backends[dep.backend], dep, body)
             try:
                 resp = await self.client.send(request, stream=True)
-            except httpx.TransportError as exc:
+            except httpx2.TransportError as exc:
                 self._failed(dep, outcome, exc)
                 continue
             if is_retryable(resp.status_code):
@@ -187,7 +187,7 @@ class Router:
             chunks = resp.aiter_bytes()
             try:
                 first = await anext(chunks, b"")
-            except httpx.TransportError as exc:
+            except httpx2.TransportError as exc:
                 await resp.aclose()
                 self._failed(dep, outcome, exc)
                 continue
@@ -206,7 +206,7 @@ class Router:
 
     async def _relay(
         self,
-        resp: httpx.Response,
+        resp: httpx2.Response,
         first: bytes,
         chunks: AsyncIterator[bytes],
         outcome: RequestOutcome,
@@ -218,7 +218,7 @@ class Router:
             async for chunk in chunks:
                 yield chunk
             outcome.status = "ok"
-        except httpx.TransportError as exc:
+        except httpx2.TransportError as exc:
             log.warning("stream from %s broke mid-response: %r", outcome.backend, exc)
             outcome.status = "stream_error"
             error = GatewayError(

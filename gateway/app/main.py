@@ -5,7 +5,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Annotated
 
-import httpx
+import httpx2
 from fastapi import Depends, FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
@@ -25,7 +25,7 @@ Caller = Annotated[Principal, Depends(require_api_key)]
 def create_app(
     settings: Settings | None = None,
     routes: RoutesConfig | None = None,
-    transport: httpx.AsyncBaseTransport | None = None,
+    transport: httpx2.AsyncBaseTransport | None = None,
     hooks: list[Hook] | None = None,
 ) -> FastAPI:
     """Build the app. The params are useful for injecting mock objects in tests."""
@@ -37,8 +37,8 @@ def create_app(
     async def lifespan(app: FastAPI):
         engine = make_engine(settings.database_url)
         await init_schema(engine)
-        timeout = httpx.Timeout(settings.read_timeout, connect=settings.connect_timeout)
-        async with httpx.AsyncClient(timeout=timeout, transport=transport) as client:
+        timeout = httpx2.Timeout(settings.read_timeout, connect=settings.connect_timeout)
+        async with httpx2.AsyncClient(timeout=timeout, transport=transport) as client:
             app.state.settings = settings
             app.state.sessionmaker = make_sessionmaker(engine)
             app.state.router = Router(routes, client, Cooldown(settings.cooldown_seconds), hooks)

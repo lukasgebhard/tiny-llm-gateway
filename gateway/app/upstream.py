@@ -1,13 +1,13 @@
 """Requests to OpenAI-compatible upstream backends."""
 
-import httpx
+import httpx2
 
 from app.config import Backend, Deployment
 
 
 def build_request(
-    client: httpx.AsyncClient, backend: Backend, deployment: Deployment, body: dict
-) -> httpx.Request:
+    client: httpx2.AsyncClient, backend: Backend, deployment: Deployment, body: dict
+) -> httpx2.Request:
     payload = {**deployment.default_params, **body, "model": deployment.model}
     headers = {}
     if backend.api_key:
