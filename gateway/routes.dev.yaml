@@ -1,0 +1,21 @@
+# Local development: the mock backend stands in for vLLM.
+#   uv run uvicorn app.mock_upstream:app --port 9000
+#   GATEWAY_MASTER_KEY=dev GATEWAY_ROUTES_FILE=routes.dev.yaml \
+#     uv run uvicorn app.main:create_app --factory --port 8080
+backends:
+  local:
+    base_url: http://127.0.0.1:9000/v1
+  openai:
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    external: true
+
+models:
+  qwen3:
+    - backend: local
+      model: Qwen/Qwen3-0.6B
+    - backend: openai
+      model: gpt-4.1-mini
+  gpt-4.1-mini:
+    - backend: openai
+      model: gpt-4.1-mini

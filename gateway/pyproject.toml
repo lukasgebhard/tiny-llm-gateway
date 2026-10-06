@@ -1,0 +1,34 @@
+[project]
+name = "tiny-llm-gateway"
+version = "0.1.0"
+description = "A small OpenAI-compatible LLM gateway with routing, fallback and per-key access policies"
+requires-python = ">=3.14"
+dependencies = [
+    "asyncpg>=0.30",
+    "fastapi>=0.115",
+    "httpx>=0.28",
+    "pydantic-settings>=2.6",
+    "pyyaml>=6.0",
+    "sqlalchemy[asyncio]>=2.0",
+    "uvicorn[standard]>=0.32",
+]
+
+[dependency-groups]
+dev = [
+    "aiosqlite>=0.20",
+    "pytest>=8.3",
+    "ruff>=0.8",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
