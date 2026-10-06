@@ -6,7 +6,7 @@ A small, OpenAI-compatible LLM gateway for organisations that run open-weight mo
 - **Automatic fallback.** Each model alias has an ordered list of deployments. If one fails, the gateway tries the next.
 - **External access is opt-in per API key.** Prompts sent to a cloud provider leave the organisation, so only keys with `allow_external` may reach external backends, directly or as a fallback.
 
-> Status: work in progress. The gateway core works; Kubernetes deployment, usage accounting and metrics are being added.
+> Status: work in progress. The gateway and its Helm chart work; usage accounting and metrics are being added.
 
 ## How it works
 
@@ -112,6 +112,100 @@ Notes:
 
 API keys are stored as SHA-256 hashes. Errors use OpenAI's format, `{"error": {"message", "type", "code"}}`, so SDKs surface them properly.
 
+## Running on Kubernetes
+
+The Helm chart in [`chart/`](chart/) deploys the gateway (2 replicas), vLLM serving Qwen3-0.6B on CPU, and PostgreSQL for the API keys. These instructions use [minikube](https://minikube.sigs.k8s.io/) and work on Windows, macOS and Linux, on x86-64 (AVX2 or AVX-512) as well as ARM64.
+
+You need minikube, [Helm](https://helm.sh/) and kubectl. With the Docker driver, give Docker at least 14 GB of memory (Docker Desktop: *Settings → Resources*; with WSL 2, set `memory=` in `.wslconfig`).
+
+**1. Start a cluster and build the gateway image into it:**
+
+```bash
+minikube start --cpus=6 --memory=12g
+minikube image build -t tiny-llm-gateway:0.1.0 gateway/
+```
+
+minikube runs its own container runtime, so images built with plain `docker build` aren't visible to it. `minikube image build` builds directly inside the cluster.
+
+**2. Optional: store your OpenAI key** as a Kubernetes Secret. Without it, the gateway only serves local models.
+
+```bash
+kubectl create secret generic openai --from-literal=api-key=sk-...
+```
+
+**3. Install the chart:**
+
+```bash
+helm install tlg chart --set openai.existingSecret=openai   # drop --set without an OpenAI key
+kubectl rollout status deploy/tlg-vllm --timeout=20m
+```
+
+On its first start, vLLM downloads the model (about 1.4 GB) into a persistent volume and compiles it for the CPU; the vLLM image itself is about 1.6 GB on x86-64. Expect several minutes before the rollout finishes. Restarts reuse the downloaded model and the compiled code.
+
+For a quick setup without vLLM, use the lightweight variant instead. A mock backend replaces vLLM, and the whole release needs well under 1 GB of memory:
+
+```bash
+helm install tlg chart -f chart/values-mock.yaml --set openai.existingSecret=openai
+```
+
+**4. Talk to the gateway.** Forward its port and read the generated master key:
+
+```bash
+kubectl port-forward svc/tlg-gateway 8080:8080   # keep running in a separate terminal
+MASTER_KEY=$(kubectl get secret tlg -o jsonpath='{.data.master-key}' | base64 -d)
+```
+
+On Windows PowerShell:
+
+```powershell
+$b64 = kubectl get secret tlg -o jsonpath='{.data.master-key}'
+$MASTER_KEY = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64))
+```
+
+From here on, the requests are the same as in [Local development](#local-development), step 3, using `$MASTER_KEY` instead of `dev`.
+
+**5. Run the built-in test.** It creates a temporary key, sends one request through the gateway and deactivates the key again:
+
+```bash
+helm test tlg --logs
+```
+
+### Chart configuration
+
+The most important values; see [`chart/values.yaml`](chart/values.yaml) for all of them:
+
+| Value | Default | Meaning |
+|---|---|---|
+| `routes` | vLLM, then OpenAI | Rendered into the gateway's routes file; see [Routes](#routes). Values may use templates. |
+| `openai.existingSecret` | `""` | Secret holding the OpenAI key, under `openai.existingSecretKey` (`api-key`) |
+| `gateway.replicas` | `2` | Gateway pods |
+| `gateway.masterKey` | generated | Admin secret; generated on install and kept on upgrades |
+| `vllm.enabled` | `true` | Deploy vLLM |
+| `vllm.model` | `Qwen/Qwen3-0.6B` | Any model from Hugging Face that fits into memory |
+| `vllm.dtype` | `float32` | `bfloat16` is faster on CPUs with native BF16 support (e.g. recent Xeons), but very slow elsewhere |
+| `vllm.cpuThreads` | `4` | Inference threads; keep at or below the CPU request |
+| `vllm.resources` | 4 CPU, 5–8 Gi | Requests and limits of the vLLM pod |
+| `mock.enabled` | `false` | Deploy the mock backend instead (see `values-mock.yaml`) |
+| `postgres.enabled` | `true` | Deploy PostgreSQL. Set to `false` and set `externalDatabase.url` to use a managed database. |
+
+Design notes on the chart:
+
+- **Graceful shutdown.** Gateway and vLLM pods wait briefly before stopping, so the Service stops sending them new requests, and running streams can finish. The gateway allows 30 s for that, vLLM 60 s.
+- **PostgreSQL** runs as a single-replica StatefulSet on the official image. That's plenty for API keys. For production, use a managed database or an operator like CloudNativePG.
+- **Several gateway replicas create the schema concurrently** on first start. A Postgres advisory lock serialises that.
+
+### Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| vLLM pod `Pending` | Not enough memory or CPU in the cluster. Check `kubectl describe pod -l app.kubernetes.io/component=vllm`, then restart minikube with more resources or lower `vllm.resources`. |
+| vLLM pod `OOMKilled` | Raise `vllm.resources.limits.memory`, or lower `vllm.kvCacheSpaceGiB` / `vllm.maxModelLen` |
+| vLLM restarts during startup | The model download takes longer than `vllm.startupTimeoutSeconds` (default 20 min); raise it |
+| vLLM logs `No available shared memory broadcast block found` for many minutes | The CPU lacks fast paths for the chosen dtype (typically `bfloat16`) or is oversubscribed. Use `vllm.dtype=float32` and keep `vllm.cpuThreads` at or below the CPUs available to minikube. |
+| Gateway answers `503 no_backend_available` | vLLM isn't ready yet, and the key may not use external models. Check `kubectl get pods`. |
+| `helm upgrade` doesn't switch between the full and the mock variant | Helm reuses the previous values when an upgrade gets no `-f`/`--set`. Pass `--reset-values`. |
+| Changed `postgres.password` has no effect | The password only applies when the volume is first initialised. Delete the PVC `data-tlg-postgres-0` to start fresh. |
+
 ## Local development
 
 You need [uv](https://docs.astral.sh/uv/). It installs the right Python version (3.14) on its own.
@@ -181,7 +275,11 @@ The tests need no running services: backends are faked with `httpx2.MockTranspor
 ## Project layout
 
 ```
+chart/                 Helm chart (gateway, vLLM, mock backend, PostgreSQL)
+  values.yaml          defaults: vLLM on CPU, then OpenAI
+  values-mock.yaml     lightweight variant with the mock backend
 gateway/
+  Dockerfile           one image for the gateway and the mock backend
   app/
     main.py            FastAPI app and OpenAI-compatible endpoints
     routing.py         policy filter, fallback, cooldown, streaming relay

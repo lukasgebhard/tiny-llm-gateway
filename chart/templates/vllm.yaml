@@ -1,0 +1,136 @@
+{{- if .Values.vllm.enabled }}
+{{- $fullname := include "tlg.fullname" . -}}
+{{- if .Values.vllm.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $fullname }}-vllm-cache
+  labels:
+    {{- include "tlg.labels" . | nindent 4 }}
+    app.kubernetes.io/component: vllm
+spec:
+  accessModes: ["ReadWriteOnce"]
+  {{- with .Values.vllm.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.vllm.persistence.size }}
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-vllm
+  labels:
+    {{- include "tlg.labels" . | nindent 4 }}
+    app.kubernetes.io/component: vllm
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # the cache volume is ReadWriteOnce
+  selector:
+    matchLabels:
+      {{- include "tlg.selectorLabels" (dict "ctx" . "component" "vllm") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tlg.selectorLabels" (dict "ctx" . "component" "vllm") | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.vllm.terminationGracePeriodSeconds }}
+      containers:
+        - name: vllm
+          image: "{{ .Values.vllm.image.repository }}:{{ .Values.vllm.image.tag }}"
+          imagePullPolicy: {{ .Values.vllm.image.pullPolicy }}
+          # The image's entrypoint is "vllm serve".
+          args:
+            - {{ .Values.vllm.model | quote }}
+            - --host=0.0.0.0
+            - --port=8000
+            - --dtype={{ .Values.vllm.dtype }}
+            - --max-model-len={{ .Values.vllm.maxModelLen }}
+            {{- range .Values.vllm.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          env:
+            - name: VLLM_CPU_KVCACHE_SPACE
+              value: {{ .Values.vllm.kvCacheSpaceGiB | quote }}
+            # Model downloads and torch.compile artifacts survive restarts on the volume.
+            - name: HF_HOME
+              value: /data/huggingface
+            - name: VLLM_CACHE_ROOT
+              value: /data/vllm
+            {{- with .Values.vllm.cpuThreads }}
+            - name: VLLM_CPU_OMP_THREADS_BIND
+              value: nobind
+            - name: OMP_NUM_THREADS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.vllm.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 8000
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            failureThreshold: {{ div .Values.vllm.startupTimeoutSeconds 10 }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 20
+            failureThreshold: 6
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
+          securityContext:
+            # Recommended by vLLM for NUMA-aware memory placement on CPU.
+            seccompProfile:
+              type: Unconfined
+            capabilities:
+              add: ["SYS_NICE"]
+          resources:
+            {{- toYaml .Values.vllm.resources | nindent 12 }}
+          volumeMounts:
+            - name: cache
+              mountPath: /data
+            - name: dshm
+              mountPath: /dev/shm
+      volumes:
+        - name: cache
+          {{- if .Values.vllm.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ $fullname }}-vllm-cache
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: {{ .Values.vllm.shmSize }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-vllm
+  labels:
+    {{- include "tlg.labels" . | nindent 4 }}
+    app.kubernetes.io/component: vllm
+spec:
+  selector:
+    {{- include "tlg.selectorLabels" (dict "ctx" . "component" "vllm") | nindent 4 }}
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+{{- end }}

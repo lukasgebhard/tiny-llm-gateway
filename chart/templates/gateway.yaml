@@ -1,0 +1,128 @@
+{{- $fullname := include "tlg.fullname" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullname }}-routes
+  labels:
+    {{- include "tlg.labels" . | nindent 4 }}
+data:
+  routes.yaml: |
+    {{- tpl (toYaml .Values.routes) . | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-gateway
+  labels:
+    {{- include "tlg.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+spec:
+  replicas: {{ .Values.gateway.replicas }}
+  selector:
+    matchLabels:
+      {{- include "tlg.selectorLabels" (dict "ctx" . "component" "gateway") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tlg.selectorLabels" (dict "ctx" . "component" "gateway") | nindent 8 }}
+      annotations:
+        # Roll the pods when the routing configuration changes.
+        checksum/routes: {{ tpl (toYaml .Values.routes) . | sha256sum }}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.gateway.terminationGracePeriodSeconds }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gateway
+          image: {{ include "tlg.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: GATEWAY_ROUTES_FILE
+              value: /etc/gateway/routes.yaml
+            - name: GATEWAY_CONNECT_TIMEOUT
+              value: {{ .Values.gateway.connectTimeout | quote }}
+            - name: GATEWAY_READ_TIMEOUT
+              value: {{ .Values.gateway.readTimeout | quote }}
+            - name: GATEWAY_COOLDOWN_SECONDS
+              value: {{ .Values.gateway.cooldownSeconds | quote }}
+            - name: GATEWAY_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fullname }}
+                  key: master-key
+            {{- if .Values.postgres.enabled }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fullname }}
+                  key: postgres-password
+            - name: GATEWAY_DATABASE_URL
+              value: "postgresql+asyncpg://{{ .Values.postgres.user }}:$(POSTGRES_PASSWORD)@{{ $fullname }}-postgres:5432/{{ .Values.postgres.database }}"
+            {{- else }}
+            - name: GATEWAY_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fullname }}
+                  key: database-url
+            {{- end }}
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "tlg.openaiSecretName" . }}
+                  key: {{ include "tlg.openaiSecretKey" . }}
+                  optional: true  # without it, external backends are disabled
+          volumeMounts:
+            - name: routes
+              mountPath: /etc/gateway
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          lifecycle:
+            preStop:
+              # Give the Service time to stop routing new requests to this pod.
+              exec:
+                command: ["sleep", "5"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.gateway.resources | nindent 12 }}
+      volumes:
+        - name: routes
+          configMap:
+            name: {{ $fullname }}-routes
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-gateway
+  labels:
+    {{- include "tlg.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+spec:
+  type: {{ .Values.gateway.service.type }}
+  selector:
+    {{- include "tlg.selectorLabels" (dict "ctx" . "component" "gateway") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.gateway.service.port }}
+      targetPort: http

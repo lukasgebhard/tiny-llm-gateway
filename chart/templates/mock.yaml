@@ -1,0 +1,64 @@
+{{- if .Values.mock.enabled }}
+{{- $fullname := include "tlg.fullname" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-mock
+  labels:
+    {{- include "tlg.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mock
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "tlg.selectorLabels" (dict "ctx" . "component" "mock") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tlg.selectorLabels" (dict "ctx" . "component" "mock") | nindent 8 }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mock
+          image: {{ include "tlg.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["uvicorn", "app.mock_upstream:app", "--host", "0.0.0.0", "--port", "8000"]
+          env:
+            - name: MOCK_FAILURE_RATE
+              value: {{ .Values.mock.failureRate | quote }}
+            - name: MOCK_TOKEN_DELAY
+              value: {{ .Values.mock.tokenDelay | quote }}
+          ports:
+            - name: http
+              containerPort: 8000
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.mock.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-mock
+  labels:
+    {{- include "tlg.labels" . | nindent 4 }}
+    app.kubernetes.io/component: mock
+spec:
+  selector:
+    {{- include "tlg.selectorLabels" (dict "ctx" . "component" "mock") | nindent 4 }}
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+{{- end }}

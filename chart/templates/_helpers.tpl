@@ -1,0 +1,47 @@
+{{/* Prefix for all resource names. Components append -gateway, -vllm, ... */}}
+{{- define "tlg.fullname" -}}
+{{- default .Release.Name .Values.fullnameOverride | trunc 50 | trimSuffix "-" -}}
+{{- end }}
+
+{{- define "tlg.labels" -}}
+app.kubernetes.io/name: tiny-llm-gateway
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version }}
+{{- end }}
+
+{{/* Usage: include "tlg.selectorLabels" (dict "ctx" $ "component" "gateway") */}}
+{{- define "tlg.selectorLabels" -}}
+app.kubernetes.io/name: tiny-llm-gateway
+app.kubernetes.io/instance: {{ .ctx.Release.Name }}
+app.kubernetes.io/component: {{ .component }}
+{{- end }}
+
+{{- define "tlg.image" -}}
+{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}
+{{- end }}
+
+{{/*
+A secret value: the explicitly configured one, else the value already stored
+in the release's Secret (so upgrades keep it), else a new random one.
+Usage: include "tlg.secretValue" (dict "ctx" $ "key" "master-key" "value" .Values.x)
+*/}}
+{{- define "tlg.secretValue" -}}
+{{- $existing := lookup "v1" "Secret" .ctx.Release.Namespace (include "tlg.fullname" .ctx) -}}
+{{- if .value -}}
+{{ .value }}
+{{- else if and $existing $existing.data (hasKey $existing.data .key) -}}
+{{ index $existing.data .key | b64dec }}
+{{- else -}}
+{{ randAlphaNum 32 }}
+{{- end -}}
+{{- end }}
+
+{{/* Secret and key holding the OpenAI API key (may not exist: the env var is optional). */}}
+{{- define "tlg.openaiSecretName" -}}
+{{- .Values.openai.existingSecret | default (include "tlg.fullname" .) -}}
+{{- end }}
+{{- define "tlg.openaiSecretKey" -}}
+{{- if .Values.openai.existingSecret }}{{ .Values.openai.existingSecretKey }}{{ else }}openai-api-key{{ end -}}
+{{- end }}

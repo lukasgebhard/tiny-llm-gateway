@@ -1,0 +1,56 @@
+{{- $fullname := include "tlg.fullname" . -}}
+# helm test: creates a temporary API key, sends one chat completion to the
+# first model the key may use (local only), then deactivates the key.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ $fullname }}-test
+  labels:
+    {{- include "tlg.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: test
+      image: {{ include "tlg.image" . }}
+      imagePullPolicy: {{ .Values.image.pullPolicy }}
+      env:
+        - name: GATEWAY_URL
+          value: "http://{{ $fullname }}-gateway:{{ .Values.gateway.service.port }}"
+        - name: MASTER_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ $fullname }}
+              key: master-key
+      command:
+        - python
+        - -c
+        - |
+          import os, time
+          import httpx2
+
+          admin = {"authorization": f"Bearer {os.environ['MASTER_KEY']}"}
+          with httpx2.Client(base_url=os.environ["GATEWAY_URL"], timeout=180) as client:
+              assert client.get("/readyz").status_code == 200, "gateway not ready"
+              key = client.post("/admin/keys", headers=admin,
+                                json={"alias": f"helm-test-{int(time.time())}"})
+              key = key.raise_for_status().json()
+              auth = {"authorization": f"Bearer {key['key']}"}
+              try:
+                  models = client.get("/v1/models", headers=auth).raise_for_status().json()
+                  model = models["data"][0]["id"]
+                  resp = client.post("/v1/chat/completions", headers=auth, json={
+                      "model": model, "max_tokens": 16,
+                      "messages": [{"role": "user", "content": "Say hello"}],
+                  })
+                  print(resp.status_code, resp.headers.get("gateway-backend"), resp.text[:300])
+                  resp.raise_for_status()
+              finally:
+                  client.patch(f"/admin/keys/{key['id']}", headers=admin, json={"active": False})
+          print("ok")

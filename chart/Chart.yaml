@@ -1,0 +1,6 @@
+apiVersion: v2
+name: tiny-llm-gateway
+description: OpenAI-compatible LLM gateway with vLLM, PostgreSQL and per-key access to external models
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

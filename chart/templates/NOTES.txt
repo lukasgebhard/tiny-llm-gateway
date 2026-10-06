@@ -1,0 +1,32 @@
+{{- $fullname := include "tlg.fullname" . -}}
+tiny-llm-gateway is installed.
+{{- if .Values.vllm.enabled }}
+
+vLLM downloads {{ .Values.vllm.model }} on its first start, which can take several minutes:
+
+  kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ $fullname }}-vllm --timeout=20m
+{{- end }}
+{{- if not (or .Values.openai.existingSecret .Values.openai.apiKey) }}
+
+No OpenAI credentials are configured, so external models are disabled.
+Set openai.existingSecret (or openai.apiKey) to enable them.
+{{- end }}
+
+1. Forward the gateway port:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ $fullname }}-gateway 8080:{{ .Values.gateway.service.port }}
+
+2. Read the master key:
+
+  kubectl -n {{ .Release.Namespace }} get secret {{ $fullname }} -o jsonpath='{.data.master-key}' | base64 -d
+
+3. Create an API key and send a request:
+
+  curl -X POST localhost:8080/admin/keys -H "Authorization: Bearer $MASTER_KEY" \
+    -H 'Content-Type: application/json' -d '{"alias": "team-a", "allow_external": true}'
+
+  curl localhost:8080/v1/chat/completions -H "Authorization: Bearer $API_KEY" \
+    -H 'Content-Type: application/json' \
+    -d '{"model": "qwen3", "messages": [{"role": "user", "content": "Hello"}]}'
+
+Run the built-in test with: helm test {{ .Release.Name }} -n {{ .Release.Namespace }}

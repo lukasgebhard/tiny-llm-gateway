@@ -1,0 +1,123 @@
+# Overrides the prefix of all resource names (default: the release name).
+fullnameOverride: ""
+
+# Gateway image; also used for the mock backend and the helm test.
+# Build it into minikube with: minikube image build -t tiny-llm-gateway:0.1.0 gateway/
+image:
+  repository: tiny-llm-gateway
+  tag: ""  # defaults to the chart's appVersion
+  pullPolicy: IfNotPresent
+
+gateway:
+  replicas: 2
+  # Secret for the /admin endpoints. Generated on install if empty, and kept on upgrades.
+  masterKey: ""
+  connectTimeout: 3
+  readTimeout: 300
+  cooldownSeconds: 30
+  service:
+    type: ClusterIP
+    port: 8080
+  # Time for running streams to finish when a pod stops (uvicorn waits up to 30 s).
+  terminationGracePeriodSeconds: 45
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {memory: 512Mi}
+
+# Credentials for the external OpenAI backend. Without them, external models are disabled.
+openai:
+  # Either reference an existing Secret (recommended) ...
+  existingSecret: ""
+  existingSecretKey: api-key
+  # ... or pass the key directly (it ends up in the release's Secret).
+  apiKey: ""
+
+# Routing configuration, rendered into the gateway's routes.yaml. Values may use
+# templates; base URLs of in-cluster backends are derived from the release name.
+routes:
+  backends:
+    vllm-local:
+      base_url: 'http://{{ include "tlg.fullname" . }}-vllm:8000/v1'
+    openai:
+      base_url: https://api.openai.com/v1
+      api_key_env: OPENAI_API_KEY
+      external: true
+  models:
+    qwen3:
+      - backend: vllm-local
+        model: Qwen/Qwen3-0.6B
+        default_params:
+          # Qwen3 "thinks" before answering by default, which is slow on CPU.
+          chat_template_kwargs: {enable_thinking: false}
+      - backend: openai
+        model: gpt-4.1-mini
+    gpt-4.1-mini:
+      - backend: openai
+        model: gpt-4.1-mini
+    gpt-4.1:
+      - backend: openai
+        model: gpt-4.1
+
+# vLLM serving a small model on CPU. On GPU nodes, use the vllm/vllm-openai image
+# and request nvidia.com/gpu instead.
+vllm:
+  enabled: true
+  image:
+    repository: vllm/vllm-openai-cpu
+    tag: v0.31.0  # multi-arch: x86-64 (AVX2 or AVX-512) and arm64
+    pullPolicy: IfNotPresent
+  model: Qwen/Qwen3-0.6B
+  # bfloat16 is faster on CPUs with native support (AVX-512 BF16, e.g. Xeon
+  # Sapphire Rapids), but falls back to slow emulation elsewhere.
+  dtype: float32
+  maxModelLen: 4096
+  kvCacheSpaceGiB: 2
+  # Inference threads. vLLM otherwise starts one per host core, which oversubscribes
+  # a container limited to fewer CPUs. Keep it at or below the CPU request.
+  cpuThreads: 4
+  extraArgs: []
+  extraEnv: []
+  # The model is downloaded on first start; startup may take several minutes.
+  startupTimeoutSeconds: 1200
+  terminationGracePeriodSeconds: 60
+  shmSize: 2Gi
+  persistence:
+    enabled: true  # keeps the model download across restarts
+    size: 5Gi
+    storageClass: ""
+  resources:
+    requests: {cpu: "4", memory: 5Gi}
+    limits: {memory: 8Gi}
+
+# OpenAI-compatible fake backend; see values-mock.yaml.
+mock:
+  enabled: false
+  failureRate: 0
+  tokenDelay: 0.05
+  resources:
+    requests: {cpu: 50m, memory: 64Mi}
+    limits: {memory: 256Mi}
+
+# Single-instance PostgreSQL for API keys. For production, set enabled: false and
+# point externalDatabase.url at a managed database or a CloudNativePG cluster.
+postgres:
+  enabled: true
+  image:
+    repository: postgres
+    tag: 18-alpine
+    pullPolicy: IfNotPresent
+  user: gateway
+  database: gateway
+  # Generated on install if empty. Only applied when the volume is first
+  # initialised; changing it later requires changing it inside the database too.
+  password: ""
+  persistence:
+    size: 1Gi
+    storageClass: ""
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {memory: 512Mi}
+
+externalDatabase:
+  # SQLAlchemy URL, e.g. postgresql+asyncpg://user:password@host:5432/db
+  url: ""
