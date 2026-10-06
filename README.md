@@ -169,11 +169,14 @@ reply = client.chat.completions.create(
 )
 ```
 
-**Linting:**
+**Tests and linting:**
 
 ```bash
+uv run pytest
 uv run ruff check . && uv run ruff format --check .
 ```
+
+The tests need no running services: backends are faked with `httpx2.MockTransport` and the database is a temporary SQLite file. They cover the access policy, fallback on each kind of failure, cooldown ordering, streaming (including fallback before the first chunk and mid-stream failures), auth and config loading.
 
 ## Project layout
 
@@ -187,5 +190,6 @@ gateway/
     auth.py, admin.py  API keys and admin endpoints
     db.py, models.py   database setup and tables
     mock_upstream.py   fake OpenAI-compatible backend for development
+  tests/               pytest suite with fake upstreams
   routes.dev.yaml      routes for local development
 ```
