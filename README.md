@@ -114,7 +114,7 @@ API keys are stored as SHA-256 hashes. Errors use OpenAI's format, `{"error": {"
 
 ## Running on Kubernetes
 
-The Helm chart in [`chart/`](chart/) deploys the gateway (2 replicas), vLLM serving Qwen3-0.6B on CPU, and PostgreSQL for the API keys. These instructions use [minikube](https://minikube.sigs.k8s.io/) and work on Windows, macOS and Linux, on x86-64 (AVX2 or AVX-512) as well as ARM64.
+The Helm chart in [`chart/`](chart/) deploys the gateway (2 replicas), vLLM serving Qwen3-0.6B on CPU, and PostgreSQL for the API keys. These instructions use [minikube](https://minikube.sigs.k8s.io/) and a bash shell; on Windows, use WSL 2. They work on x86-64 (AVX2 or AVX-512) as well as ARM64.
 
 You need minikube, [Helm](https://helm.sh/) and kubectl. With the Docker driver, give Docker at least 14 GB of memory (Docker Desktop: *Settings → Resources*; with WSL 2, set `memory=` in `.wslconfig`).
 
@@ -155,19 +155,35 @@ kubectl port-forward svc/tlg-gateway 8080:8080   # keep running in a separate te
 MASTER_KEY=$(kubectl get secret tlg -o jsonpath='{.data.master-key}' | base64 -d)
 ```
 
-On Windows PowerShell:
-
-```powershell
-$b64 = kubectl get secret tlg -o jsonpath='{.data.master-key}'
-$MASTER_KEY = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64))
-```
-
 From here on, the requests are the same as in [Local development](#local-development), step 3, using `$MASTER_KEY` instead of `dev`.
 
 **5. Run the built-in test.** It creates a temporary key, sends one request through the gateway and deactivates the key again:
 
 ```bash
 helm test tlg --logs
+```
+
+### Guided demo
+
+[`scripts/demo.sh`](scripts/demo.sh) runs all of the above and then walks through the gateway's features step by step:
+
+1. Starts minikube if needed, builds the image and installs the chart
+2. Creates two API keys: `team-a` may use external models, `team-b` may not
+3. `team-a` asks the local model, once normally and once streamed, then the external model
+4. `team-b` asks for the external model and gets `403`
+5. The local model server is scaled to 0: `team-a` falls back to OpenAI, `team-b` gets `503`, because its prompts must not leave the cluster
+
+```bash
+export OPENAI_API_KEY=sk-...   # optional; without it, the external steps are skipped
+scripts/demo.sh                # or: scripts/demo.sh --mock  (no vLLM)
+```
+
+The script needs `minikube`, `kubectl`, `helm`, `curl` and `jq`. It pauses between steps; set `DEMO_PAUSE=0` to run it straight through, and `DEMO_PORT` if port 8080 is taken. Re-running it is safe. Abbreviated output of the `team-a` step:
+
+```
+=== 4. team-a: local model, streamed local model, external model ===
+HTTP 200   Gateway-Backend: local   Gateway-Attempts: 1
+  [Qwen/Qwen3-0.6B] An LLM gateway is a platform that enables users to interact with large language models ...
 ```
 
 ### Chart configuration
@@ -192,6 +208,7 @@ Design notes on the chart:
 - **Graceful shutdown.** Gateway and vLLM pods wait briefly before stopping, so the Service stops sending them new requests, and running streams can finish. The gateway allows 30 s for that, vLLM 60 s.
 - **PostgreSQL** runs as a single-replica StatefulSet on the official image. That's plenty for API keys. For production, use a managed database or an operator like CloudNativePG.
 - **Several gateway replicas create the schema concurrently** on first start. A Postgres advisory lock serialises that.
+- **The vLLM cache volume is kept** when switching to the mock backend or uninstalling, so the model isn't downloaded again. To free the space: `kubectl delete pvc tlg-vllm-cache`.
 
 ### Troubleshooting
 
@@ -230,8 +247,6 @@ export GATEWAY_ROUTES_FILE=routes.dev.yaml
 export OPENAI_API_KEY=sk-...      # optional; without it, only local models are served
 uv run uvicorn app.main:create_app --factory --port 8080 --reload
 ```
-
-On Windows PowerShell, set the variables with `$env:GATEWAY_MASTER_KEY = "dev"` and so on.
 
 **3. Create an API key and send requests** (the first command uses [jq](https://jqlang.org/)):
 
@@ -289,4 +304,6 @@ gateway/
     mock_upstream.py   fake OpenAI-compatible backend for development
   tests/               pytest suite with fake upstreams
   routes.dev.yaml      routes for local development
+scripts/
+  demo.sh              guided end-to-end demo on minikube
 ```

@@ -8,6 +8,9 @@ metadata:
   labels:
     {{- include "tlg.labels" . | nindent 4 }}
     app.kubernetes.io/component: vllm
+  annotations:
+    # Keep the downloaded model when switching to the mock backend or uninstalling.
+    helm.sh/resource-policy: keep
 spec:
   accessModes: ["ReadWriteOnce"]
   {{- with .Values.vllm.persistence.storageClass }}
