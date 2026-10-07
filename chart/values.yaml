@@ -32,20 +32,25 @@ openai:
   # ... or pass the key directly (it ends up in the release's Secret).
   apiKey: ""
 
+# The in-cluster model server behind the "local" backend in routes:
+#   vllm  vLLM serving vllm.model
+#   mock  OpenAI-compatible fake, no model download
+localBackend: vllm
+
 # Routing configuration, rendered into the gateway's routes.yaml. Values may use
-# templates; base URLs of in-cluster backends are derived from the release name.
+# templates; tlg.localModel is the model of the local backend.
 routes:
   backends:
-    vllm-local:
-      base_url: 'http://{{ include "tlg.fullname" . }}-vllm:8000/v1'
+    local:
+      base_url: 'http://{{ include "tlg.fullname" . }}-{{ .Values.localBackend }}:8000/v1'
     openai:
       base_url: https://api.openai.com/v1
       api_key_env: OPENAI_API_KEY
       external: true
   models:
     qwen3:
-      - backend: vllm-local
-        model: Qwen/Qwen3-0.6B
+      - backend: local
+        model: '{{ include "tlg.localModel" . }}'
         default_params:
           # Qwen3 "thinks" before answering by default, which is slow on CPU.
           chat_template_kwargs: {enable_thinking: false}
@@ -54,21 +59,15 @@ routes:
     gpt-4.1-mini:
       - backend: openai
         model: gpt-4.1-mini
-    gpt-4.1:
-      - backend: openai
-        model: gpt-4.1
 
-# vLLM serving a small model on CPU. On GPU nodes, use the vllm/vllm-openai image
-# and request nvidia.com/gpu instead.
+# vLLM serving a small model on CPU (localBackend: vllm). On GPU nodes, use the
+# vllm/vllm-openai image and request nvidia.com/gpu instead.
 vllm:
-  enabled: true
   image:
     repository: vllm/vllm-openai-cpu
     tag: v0.31.0  # multi-arch: x86-64 (AVX2 or AVX-512) and arm64
     pullPolicy: IfNotPresent
   model: Qwen/Qwen3-0.6B
-  # bfloat16 is faster on CPUs with native support (AVX-512 BF16, e.g. Xeon
-  # Sapphire Rapids), but falls back to slow emulation elsewhere.
   dtype: float32
   maxModelLen: 4096
   kvCacheSpaceGiB: 2
@@ -89,9 +88,8 @@ vllm:
     requests: {cpu: "4", memory: 5Gi}
     limits: {memory: 8Gi}
 
-# OpenAI-compatible fake backend; see values-mock.yaml.
+# OpenAI-compatible fake backend (localBackend: mock); see values-mock.yaml.
 mock:
-  enabled: false
   failureRate: 0
   tokenDelay: 0.05
   resources:

@@ -1,6 +1,6 @@
 {{- $fullname := include "tlg.fullname" . -}}
 tiny-llm-gateway is installed.
-{{- if .Values.vllm.enabled }}
+{{- if eq .Values.localBackend "vllm" }}
 
 vLLM downloads {{ .Values.vllm.model }} on its first start, which can take several minutes:
 

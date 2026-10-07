@@ -1,4 +1,4 @@
-{{- if .Values.mock.enabled }}
+{{- if eq .Values.localBackend "mock" }}
 {{- $fullname := include "tlg.fullname" . -}}
 apiVersion: apps/v1
 kind: Deployment

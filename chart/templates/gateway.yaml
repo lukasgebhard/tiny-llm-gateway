@@ -7,7 +7,7 @@ metadata:
     {{- include "tlg.labels" . | nindent 4 }}
 data:
   routes.yaml: |
-    {{- tpl (toYaml .Values.routes) . | nindent 4 }}
+    {{- include "tlg.routes" . | nindent 4 }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -27,7 +27,7 @@ spec:
         {{- include "tlg.selectorLabels" (dict "ctx" . "component" "gateway") | nindent 8 }}
       annotations:
         # Roll the pods when the routing configuration changes.
-        checksum/routes: {{ tpl (toYaml .Values.routes) . | sha256sum }}
+        checksum/routes: {{ include "tlg.routes" . | sha256sum }}
     spec:
       terminationGracePeriodSeconds: {{ .Values.gateway.terminationGracePeriodSeconds }}
       securityContext:

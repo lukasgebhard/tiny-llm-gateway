@@ -1,23 +1,7 @@
 # Lightweight variant: the mock backend replaces vLLM, so no model download and
 # only a few hundred MB of memory. The qwen3 alias is kept, so clients and the
-# demo work unchanged; responses show Gateway-Backend: mock.
+# demo work unchanged; responses show model: mock-qwen3.
 #
 #   helm install tlg ./chart -f chart/values-mock.yaml
 
-vllm:
-  enabled: false
-
-mock:
-  enabled: true
-
-routes:
-  backends:
-    vllm-local: null  # removes the backend inherited from values.yaml
-    mock:
-      base_url: 'http://{{ include "tlg.fullname" . }}-mock:8000/v1'
-  models:
-    qwen3:
-      - backend: mock
-        model: mock-qwen3
-      - backend: openai
-        model: gpt-4.1-mini
+localBackend: mock

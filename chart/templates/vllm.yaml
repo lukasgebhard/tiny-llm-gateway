@@ -1,4 +1,4 @@
-{{- if .Values.vllm.enabled }}
+{{- if eq .Values.localBackend "vllm" }}
 {{- $fullname := include "tlg.fullname" . -}}
 {{- if .Values.vllm.persistence.enabled }}
 apiVersion: v1

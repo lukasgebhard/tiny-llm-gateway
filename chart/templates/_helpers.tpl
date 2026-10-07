@@ -38,6 +38,19 @@ Usage: include "tlg.secretValue" (dict "ctx" $ "key" "master-key" "value" .Value
 {{- end -}}
 {{- end }}
 
+{{/* Model served by the "local" backend in routes. */}}
+{{- define "tlg.localModel" -}}
+{{- if eq .Values.localBackend "vllm" }}{{ .Values.vllm.model }}{{ else }}mock-qwen3{{ end -}}
+{{- end }}
+
+{{/* The gateway's routes.yaml, with templates in .Values.routes rendered. */}}
+{{- define "tlg.routes" -}}
+{{- if not (has .Values.localBackend (list "vllm" "mock")) }}
+{{- fail (printf "localBackend must be vllm or mock, not %q" (toString .Values.localBackend)) }}
+{{- end }}
+{{- tpl (toYaml .Values.routes) . }}
+{{- end }}
+
 {{/* Secret and key holding the OpenAI API key (may not exist: the env var is optional). */}}
 {{- define "tlg.openaiSecretName" -}}
 {{- .Values.openai.existingSecret | default (include "tlg.fullname" .) -}}

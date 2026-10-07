@@ -28,7 +28,7 @@ Every response carries two headers:
 
 | Header | Meaning |
 |---|---|
-| `Gateway-Backend` | The backend that served the request, e.g. `vllm-local` or `openai` |
+| `Gateway-Backend` | The backend that served the request, e.g. `local` or `openai` |
 | `Gateway-Attempts` | How many deployments were tried; `2` means one fallback happened |
 
 The response body stays exactly what the backend returned, so strict OpenAI clients keep working. The `model` field in the body shows the upstream model that actually answered.
@@ -176,16 +176,15 @@ The most important values; see [`chart/values.yaml`](chart/values.yaml) for all 
 
 | Value | Default | Meaning |
 |---|---|---|
-| `routes` | vLLM, then OpenAI | Rendered into the gateway's routes file; see [Routes](#routes). Values may use templates. |
+| `localBackend` | `vllm` | Model server behind the `local` backend: `vllm` or `mock` (fake backend, see `values-mock.yaml`) |
+| `routes` | local backend, then OpenAI | Rendered into the gateway's routes file; see [Routes](#routes). Values may use templates. |
 | `openai.existingSecret` | `""` | Secret holding the OpenAI key, under `openai.existingSecretKey` (`api-key`) |
 | `gateway.replicas` | `2` | Gateway pods |
 | `gateway.masterKey` | generated | Admin secret; generated on install and kept on upgrades |
-| `vllm.enabled` | `true` | Deploy vLLM |
 | `vllm.model` | `Qwen/Qwen3-0.6B` | Any model from Hugging Face that fits into memory |
 | `vllm.dtype` | `float32` | `bfloat16` is faster on CPUs with native BF16 support (e.g. recent Xeons), but very slow elsewhere |
 | `vllm.cpuThreads` | `4` | Inference threads; keep at or below the CPU request |
 | `vllm.resources` | 4 CPU, 5–8 Gi | Requests and limits of the vLLM pod |
-| `mock.enabled` | `false` | Deploy the mock backend instead (see `values-mock.yaml`) |
 | `postgres.enabled` | `true` | Deploy PostgreSQL. Set to `false` and set `externalDatabase.url` to use a managed database. |
 
 Design notes on the chart:
@@ -277,7 +276,7 @@ The tests need no running services: backends are faked with `httpx2.MockTranspor
 ```
 chart/                 Helm chart (gateway, vLLM, mock backend, PostgreSQL)
   values.yaml          defaults: vLLM on CPU, then OpenAI
-  values-mock.yaml     lightweight variant with the mock backend
+  values-mock.yaml     lightweight variant with the mock backend (localBackend: mock)
 gateway/
   Dockerfile           one image for the gateway and the mock backend
   app/
