@@ -206,7 +206,7 @@ The most important values; see [`chart/values.yaml`](chart/values.yaml) for all 
 Design notes on the chart:
 
 - **Graceful shutdown.** Gateway and vLLM pods wait briefly before stopping, so the Service stops sending them new requests, and running streams can finish. The gateway allows 30 s for that, vLLM 60 s.
-- **PostgreSQL** runs as a single-replica StatefulSet on the official image. That's plenty for API keys. For production, use a managed database or an operator like CloudNativePG.
+- **`helm uninstall` keeps the data.** Kubernetes keeps the database volume, with all API keys and usage data, and the chart keeps the release's Secret with the generated passwords to match. A reinstall picks up where the last install left off. For a clean slate, delete both after uninstalling: `kubectl delete pvc data-tlg-postgres-0 && kubectl delete secret tlg`.
 - **Several gateway replicas create the schema concurrently** on first start. A Postgres advisory lock serialises that.
 - **The vLLM cache volume is kept** when switching to the mock backend or uninstalling, so the model isn't downloaded again. To free the space: `kubectl delete pvc tlg-vllm-cache`.
 
