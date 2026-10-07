@@ -9,6 +9,7 @@
 # Environment:
 #   OPENAI_API_KEY  enables the external backend (optional)
 #   DEMO_PORT       local port for the gateway (default 8080)
+#   DEMO_PROM_PORT  local port for Prometheus (default 9090)
 #   DEMO_PAUSE=0    don't pause between steps
 set -euo pipefail
 
@@ -16,6 +17,8 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 RELEASE=tlg
 PORT=${DEMO_PORT:-8080}
 BASE="http://localhost:$PORT"
+PROM_PORT=${DEMO_PROM_PORT:-9090}
+PROM="http://localhost:$PROM_PORT"
 LOCAL_BACKEND=vllm
 [[ ${1:-} == --mock ]] && LOCAL_BACKEND=mock
 PROMPT="In one sentence: what does an LLM gateway do?"
@@ -79,6 +82,15 @@ models() {
   curl -s "$BASE/v1/models" -H "Authorization: Bearer $1" | jq -r '[.data[].id] | join(", ")'
 }
 
+# Runs a PromQL query and prints one line per series: its labels and value.
+promql() {
+  printf '  \033[2m%s\033[0m\n' "$1"
+  curl -s "$PROM/api/v1/query" --data-urlencode "query=$1" |
+    jq -r 'if .data.result == [] then "    (no data)" else .data.result[] |
+      "    \(.metric | del(.__name__) | to_entries | map("\(.key)=\(.value)") | join(" ")): \(.value[1])"
+      end'
+}
+
 # Prints the usage report since the start of this run, grouped by key or backend.
 usage_table() {
   local group=$1
@@ -123,7 +135,9 @@ kubectl get pods -l "app.kubernetes.io/instance=$RELEASE"
 echo
 kubectl port-forward "svc/$RELEASE-gateway" "$PORT:8080" >/dev/null 2>&1 &
 PF_PID=$!
-trap 'kill $PF_PID 2>/dev/null || true' EXIT
+kubectl port-forward "svc/$RELEASE-prometheus" "$PROM_PORT:9090" >/dev/null 2>&1 &
+PROM_PF_PID=$!
+trap 'kill $PF_PID $PROM_PF_PID 2>/dev/null || true' EXIT
 for _ in $(seq 30); do curl -sf "$BASE/healthz" >/dev/null && break; sleep 1; done
 curl -sf "$BASE/healthz" >/dev/null ||
   { echo "Gateway not reachable on port $PORT (in use? set DEMO_PORT)" >&2; exit 1; }
@@ -175,6 +189,34 @@ step "7. Usage report for this run (GET /admin/usage)"
 usage_table key
 echo
 usage_table backend
+pause
+
+step "8. Metrics in Prometheus"
+# Wait until Prometheus has discovered all (restarted) gateway replicas, then for
+# one more scrape, so it has seen the counters of every request in this run.
+replicas=$(kubectl get deploy "$RELEASE-gateway" -o jsonpath='{.spec.replicas}')
+for _ in $(seq 60); do
+  up=$(curl -s "$PROM/api/v1/query" --data-urlencode 'query=count(up{job="gateway"} == 1)' |
+    jq -r '.data.result[0].value[1] // 0' 2>/dev/null || echo 0)
+  [[ $up -ge $replicas ]] && break
+  sleep 2
+done
+note "Waiting for the next scrape..."
+sleep 12
+echo "Requests by backend and outcome, summed over the $replicas gateway replicas:"
+promql 'sum by (backend, status) (gateway_requests_total)'
+echo "Failed attempts that triggered a fallback (to_backend=none: nothing answered):"
+promql 'sum by (from_backend, to_backend) (gateway_fallbacks_total)'
+echo "Requests denied by the external-access policy:"
+promql 'sum by (model) (gateway_policy_denials_total)'
+if [[ $LOCAL_BACKEND == vllm ]]; then
+  echo "Scrape targets that are up, per job (vLLM is still restarting after step 6):"
+else
+  echo "Scrape targets that are up, per job:"
+fi
+promql 'sum by (job) (up)'
 
 step "Done"
-echo "To keep exploring: kubectl port-forward svc/$RELEASE-gateway $PORT:8080"
+echo "To keep exploring:"
+echo "  kubectl port-forward svc/$RELEASE-gateway $PORT:8080"
+echo "  kubectl port-forward svc/$RELEASE-prometheus $PROM_PORT:9090   # then open $PROM"

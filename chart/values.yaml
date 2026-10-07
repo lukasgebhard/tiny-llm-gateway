@@ -119,3 +119,19 @@ postgres:
 externalDatabase:
   # SQLAlchemy URL, e.g. postgresql+asyncpg://user:password@host:5432/db
   url: ""
+
+# Prometheus scraping the gateway pods (each replica has its own counters) and,
+# with localBackend: vllm, vLLM's own metrics. Data lives in an emptyDir volume,
+# so it is lost when the pod is replaced. To use an existing Prometheus instead,
+# disable this and scrape every address behind <release>-gateway-pods:8080/metrics.
+prometheus:
+  enabled: true
+  image:
+    repository: prom/prometheus
+    tag: v3.15.0
+    pullPolicy: IfNotPresent
+  scrapeInterval: 10s
+  retention: 2d
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+    limits: {memory: 512Mi}

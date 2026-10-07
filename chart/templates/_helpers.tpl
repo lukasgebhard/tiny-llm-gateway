@@ -58,3 +58,23 @@ Usage: include "tlg.secretValue" (dict "ctx" $ "key" "master-key" "value" .Value
 {{- define "tlg.openaiSecretKey" -}}
 {{- if .Values.openai.existingSecret }}{{ .Values.openai.existingSecretKey }}{{ else }}openai-api-key{{ end -}}
 {{- end }}
+
+{{/* Prometheus configuration (scrape targets). */}}
+{{- define "tlg.prometheusConfig" -}}
+global:
+  scrape_interval: {{ .Values.prometheus.scrapeInterval }}
+scrape_configs:
+  # One target per gateway replica, found via the headless Service.
+  - job_name: gateway
+    dns_sd_configs:
+      - names: ["{{ include "tlg.fullname" . }}-gateway-pods.{{ .Release.Namespace }}.svc"]
+        type: A
+        port: 8080
+        refresh_interval: 15s
+  {{- if eq .Values.localBackend "vllm" }}
+  # vLLM's own metrics: queue length, KV cache usage, tokens per second, ...
+  - job_name: vllm
+    static_configs:
+      - targets: ["{{ include "tlg.fullname" . }}-vllm:8000"]
+  {{- end }}
+{{- end }}
