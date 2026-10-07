@@ -1,0 +1,96 @@
+{{- if .Values.prometheus.enabled }}
+{{- $fullname := include "tlg.fullname" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullname }}-prometheus
+  labels:
+    {{- include "tlg.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prometheus
+data:
+  prometheus.yml: |
+    {{- include "tlg.prometheusConfig" . | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-prometheus
+  labels:
+    {{- include "tlg.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prometheus
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # two instances must not share the data directory
+  selector:
+    matchLabels:
+      {{- include "tlg.selectorLabels" (dict "ctx" . "component" "prometheus") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tlg.selectorLabels" (dict "ctx" . "component" "prometheus") | nindent 8 }}
+      annotations:
+        checksum/config: {{ include "tlg.prometheusConfig" . | sha256sum }}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534  # "nobody", as in the official image
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: prometheus
+          image: "{{ .Values.prometheus.image.repository }}:{{ .Values.prometheus.image.tag }}"
+          imagePullPolicy: {{ .Values.prometheus.image.pullPolicy }}
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            - --storage.tsdb.retention.time={{ .Values.prometheus.retention }}
+          ports:
+            - name: http
+              containerPort: 9090
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: http
+            periodSeconds: 15
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            {{- toYaml .Values.prometheus.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/prometheus
+              readOnly: true
+            - name: data
+              mountPath: /prometheus
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $fullname }}-prometheus
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-prometheus
+  labels:
+    {{- include "tlg.labels" . | nindent 4 }}
+    app.kubernetes.io/component: prometheus
+spec:
+  selector:
+    {{- include "tlg.selectorLabels" (dict "ctx" . "component" "prometheus") | nindent 4 }}
+  ports:
+    - name: http
+      port: 9090
+      targetPort: http
+{{- end }}

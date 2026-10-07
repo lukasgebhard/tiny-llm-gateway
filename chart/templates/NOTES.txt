@@ -28,5 +28,11 @@ Set openai.existingSecret (or openai.apiKey) to enable them.
   curl localhost:8080/v1/chat/completions -H "Authorization: Bearer $API_KEY" \
     -H 'Content-Type: application/json' \
     -d '{"model": "qwen3", "messages": [{"role": "user", "content": "Hello"}]}'
+{{- if .Values.prometheus.enabled }}
+
+4. Open Prometheus at http://localhost:9090 after forwarding its port:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ $fullname }}-prometheus 9090:9090
+{{- end }}
 
 Run the built-in test with: helm test {{ .Release.Name }} -n {{ .Release.Namespace }}

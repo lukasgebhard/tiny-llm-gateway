@@ -126,3 +126,21 @@ spec:
     - name: http
       port: {{ .Values.gateway.service.port }}
       targetPort: http
+---
+# Headless Service: its DNS name resolves to every ready gateway pod, so Prometheus
+# can scrape each replica's counters instead of a random one behind the Service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-gateway-pods
+  labels:
+    {{- include "tlg.labels" . | nindent 4 }}
+    app.kubernetes.io/component: gateway
+spec:
+  clusterIP: None
+  selector:
+    {{- include "tlg.selectorLabels" (dict "ctx" . "component" "gateway") | nindent 4 }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

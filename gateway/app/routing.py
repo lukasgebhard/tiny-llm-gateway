@@ -74,6 +74,11 @@ class Cooldown:
     def trip(self, dep: Deployment) -> None:
         self._until[(dep.backend, dep.model)] = self.clock() + self.seconds
 
+    def cooling(self) -> set[tuple[str, str]]:
+        """The (backend, model) pairs currently in cooldown."""
+        now = self.clock()
+        return {key for key, until in self._until.items() if until > now}
+
     def active(self, dep: Deployment) -> bool:
         return self._until.get((dep.backend, dep.model), 0.0) > self.clock()
 

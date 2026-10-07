@@ -8,6 +8,7 @@ from typing import Annotated
 import httpx2
 from fastapi import Depends, FastAPI, Request, Response
 from fastapi.responses import JSONResponse
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from sqlalchemy import text
 
 from app import admin
@@ -15,6 +16,7 @@ from app.auth import Principal, require_api_key
 from app.config import RoutesConfig, Settings, load_routes
 from app.db import init_schema, make_engine, make_sessionmaker
 from app.errors import GatewayError, bad_request
+from app.metrics import Metrics
 from app.routing import Cooldown, Hook, Router
 from app.usage import usage_recorder
 
@@ -33,6 +35,7 @@ def create_app(
     settings = settings or Settings()
     routes = routes or load_routes(settings.routes_file)
     hooks = list(hooks or [])
+    metrics = Metrics(routes)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -43,11 +46,13 @@ def create_app(
             sessionmaker = make_sessionmaker(engine)
             app.state.settings = settings
             app.state.sessionmaker = sessionmaker
+            cooldown = Cooldown(settings.cooldown_seconds)
+            metrics.watch_cooldown(cooldown)
             app.state.router = Router(
                 routes,
                 client,
-                Cooldown(settings.cooldown_seconds),
-                [usage_recorder(sessionmaker), *hooks],
+                cooldown,
+                [usage_recorder(sessionmaker), metrics.hook(), *hooks],
             )
             yield
         await engine.dispose()
@@ -92,5 +97,9 @@ def create_app(
         except Exception as exc:
             return JSONResponse({"status": "unavailable", "detail": str(exc)}, status_code=503)
         return {"status": "ok"}
+
+    @app.get("/metrics")
+    async def prometheus_metrics() -> Response:
+        return Response(generate_latest(metrics.registry), media_type=CONTENT_TYPE_LATEST)
 
     return app
