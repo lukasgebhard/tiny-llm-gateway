@@ -6,8 +6,6 @@ A small, OpenAI-compatible LLM gateway for organisations that run open-weight mo
 - **Automatic fallback.** Each model alias has an ordered list of deployments. If one fails, the gateway tries the next.
 - **External access is opt-in per API key.** Prompts sent to a cloud provider leave the organisation, so only keys with `allow_external` may reach external backends, directly or as a fallback.
 
-> Status: work in progress. The gateway and its Helm chart work; usage accounting and metrics are being added.
-
 ## How it works
 
 ```mermaid
@@ -15,7 +13,7 @@ flowchart LR
     C[Client<br/>OpenAI SDK, curl, chat UI] -->|Bearer API key| G[tiny-llm-gateway]
     G -->|local, preferred| V[vLLM<br/>Qwen3]
     G -->|external, if the key allows it| O[OpenAI]
-    G --- DB[(Database<br/>API keys)]
+    G --- DB[(Database<br/>API keys, usage)]
 ```
 
 A request for a model alias goes through three steps:
@@ -37,16 +35,7 @@ The response body stays exactly what the backend returned, so strict OpenAI clie
 
 For `stream: true`, the gateway waits for the backend's **first chunk** before it commits to that backend. A backend that refuses the connection, returns an error status, or dies before sending anything is skipped like in the non-streaming case.
 
-Once the first bytes have reached the client, the response belongs to that backend. If it breaks mid-stream, the gateway ends the stream with an OpenAI-style error event (`stream_interrupted`) followed by `data: [DONE]`. Switching backends silently at that point would hand the client two half-answers glued together.
-
-Ways to lift this limitation, each with a cost:
-
-| Approach | Trade-off |
-|---|---|
-| Hold back the first N tokens before forwarding | Catches early failures, but delays the first visible token |
-| Buffer the whole response | No mid-stream failures at all, but defeats the point of streaming |
-| Resume on the next backend: send the partial answer as an assistant prefix and let it continue | vLLM supports this (`continue_final_message`), OpenAI's Chat API does not; the style can shift between models |
-| Let the client retry | Pushes the complexity onto every client |
+Once the first bytes have reached the client, the response belongs to that backend. If it breaks mid-stream, the gateway ends the stream with an OpenAI-style error event (`stream_interrupted`) followed by `data: [DONE]`. Switching backends silently at that point would hand the client two half-answers glued together. 
 
 In practice, the most common cause of broken streams in Kubernetes is pods being stopped during rollouts or scale-down. Graceful termination, so running streams can finish, avoids most of them.
 
@@ -107,10 +96,47 @@ Notes:
 | `POST /admin/keys` | Master key | Create a key: `{"alias": "team-a", "allow_external": true}`. The secret is returned only once. |
 | `GET /admin/keys` | Master key | List keys (without secrets) |
 | `PATCH /admin/keys/{id}` | Master key | Change `allow_external` or `active` |
+| `GET /admin/usage` | Master key | Usage report; see [Usage accounting](#usage-accounting) |
 | `GET /healthz` | none | Liveness |
 | `GET /readyz` | none | Readiness (database reachable) |
 
 API keys are stored as SHA-256 hashes. Errors use OpenAI's format, `{"error": {"message", "type", "code"}}`, so SDKs surface them properly.
+
+## Usage accounting
+
+The gateway stores one row per chat completion request in the `usage_log` table. Each row records:
+- the API key and requested model alias
+- the backend and upstream model that answered
+- the outcome and HTTP status
+- the number of attempts and whether a fallback happened
+- prompt and completion tokens
+- latency, and time to first byte for streams
+
+Rejected requests (403, 503) are recorded too, so the log doubles as an audit trail.
+
+`GET /admin/usage` aggregates the log. `group_by` is `key` (default), `model` or `backend`; the optional `since` (ISO 8601, UTC if no offset is given) limits the time range:
+
+```bash
+curl -s "localhost:8080/admin/usage?group_by=key&since=2026-10-01T00:00:00Z" \
+  -H "Authorization: Bearer $MASTER_KEY"
+```
+
+```json
+{
+  "group_by": "key",
+  "since": "2026-10-01T00:00:00Z",
+  "data": [
+    {"key": "team-a", "requests": 4, "errors": 0, "fallbacks": 1, "prompt_tokens": 86,
+     "completion_tokens": 115, "total_tokens": 201, "avg_latency_ms": 3008}
+  ]
+}
+```
+
+`errors` counts requests that failed because of the request, the policy or the backends. Clients that disconnect mid-stream are logged but not counted as errors.
+
+**Token counts come from the backends.** For non-streaming requests, the gateway reads the `usage` field of the response.
+
+Streams carry no usage by default, so the gateway asks every backend for a final usage chunk (`stream_options.include_usage`, supported by OpenAI and vLLM). It reads the counts as the stream passes through and removes that chunk again, unless the client asked for it itself, so clients receive exactly the stream they requested. A stream that breaks mid-way has no token counts.
 
 ## Running on Kubernetes
 
@@ -172,6 +198,7 @@ helm test tlg --logs
 3. `team-a` asks the local model, once normally and once streamed, then the external model
 4. `team-b` asks for the external model and gets `403`
 5. The local model server is scaled to 0: `team-a` falls back to OpenAI, `team-b` gets `503`, because its prompts must not leave the cluster
+6. Shows the usage report of the run, per key and per backend
 
 ```bash
 export OPENAI_API_KEY=sk-...   # optional; without it, the external steps are skipped
@@ -206,6 +233,7 @@ The most important values; see [`chart/values.yaml`](chart/values.yaml) for all 
 Design notes on the chart:
 
 - **Graceful shutdown.** Gateway and vLLM pods wait briefly before stopping, so the Service stops sending them new requests, and running streams can finish. The gateway allows 30 s for that, vLLM 60 s.
+- **PostgreSQL** runs as a single-replica StatefulSet on the official image. That's plenty for API keys and the usage log. For production, use a managed database or an operator like CloudNativePG.
 - **`helm uninstall` keeps the data.** Kubernetes keeps the database volume, with all API keys and usage data, and the chart keeps the release's Secret with the generated passwords to match. A reinstall picks up where the last install left off. For a clean slate, delete both after uninstalling: `kubectl delete pvc data-tlg-postgres-0 && kubectl delete secret tlg`.
 - **Several gateway replicas create the schema concurrently** on first start. A Postgres advisory lock serialises that.
 - **The vLLM cache volume is kept** when switching to the mock backend or uninstalling, so the model isn't downloaded again. To free the space: `kubectl delete pvc tlg-vllm-cache`.
@@ -220,7 +248,8 @@ Design notes on the chart:
 | vLLM logs `No available shared memory broadcast block found` for many minutes | The CPU lacks fast paths for the chosen dtype (typically `bfloat16`) or is oversubscribed. Use `vllm.dtype=float32` and keep `vllm.cpuThreads` at or below the CPUs available to minikube. |
 | Gateway answers `503 no_backend_available` | vLLM isn't ready yet, and the key may not use external models. Check `kubectl get pods`. |
 | `helm upgrade` doesn't switch between the full and the mock variant | Helm reuses the previous values when an upgrade gets no `-f`/`--set`. Pass `--reset-values`. |
-| Changed `postgres.password` has no effect | The password only applies when the volume is first initialised. Delete the PVC `data-tlg-postgres-0` to start fresh. |
+| Changed `postgres.password` has no effect | The password only applies when the volume is first initialised. To start fresh, uninstall and delete the PVC `data-tlg-postgres-0`. |
+| Gateway logs `password authentication failed` | The database volume and the release's Secret don't match, e.g. because only one of them was deleted. Uninstall, then delete both (see the design notes above) and install again. |
 
 ## Local development
 
@@ -284,7 +313,7 @@ uv run pytest
 uv run ruff check . && uv run ruff format --check .
 ```
 
-The tests need no running services: backends are faked with `httpx2.MockTransport` and the database is a temporary SQLite file. They cover the access policy, fallback on each kind of failure, cooldown ordering, streaming (including fallback before the first chunk and mid-stream failures), auth and config loading.
+The tests need no running services: backends are faked with `httpx2.MockTransport` and the database is a temporary SQLite file. They cover the access policy, fallback on each kind of failure, cooldown ordering, streaming (including fallback before the first chunk, mid-stream failures and events split across network reads), usage accounting, auth and config loading.
 
 ## Project layout
 
@@ -300,6 +329,7 @@ gateway/
     upstream.py        requests to OpenAI-compatible backends
     config.py          settings (env) and routes (YAML)
     auth.py, admin.py  API keys and admin endpoints
+    usage.py           usage logging and the usage report
     db.py, models.py   database setup and tables
     mock_upstream.py   fake OpenAI-compatible backend for development
   tests/               pytest suite with fake upstreams

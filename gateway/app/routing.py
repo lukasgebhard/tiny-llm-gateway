@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
@@ -42,9 +43,24 @@ class RequestOutcome:
     failed_backends: list[str] = field(default_factory=list)
     latency_s: float = 0.0
     ttfb_s: float | None = None  # streaming only: time until the first upstream chunk
+    prompt_tokens: int | None = None  # as reported by the backend
+    completion_tokens: int | None = None
+
+    @property
+    def fallback(self) -> bool:
+        """Whether the request was served by a deployment other than the first one tried."""
+        return self.backend is not None and bool(self.failed_backends)
+
+    def record_usage(self, usage: object) -> None:
+        if isinstance(usage, dict):
+            self.prompt_tokens = usage.get("prompt_tokens")
+            self.completion_tokens = usage.get("completion_tokens")
 
 
 Hook = Callable[[RequestOutcome], Awaitable[None]]
+
+# Server-sent events are separated by a blank line.
+SSE_EVENT_END = re.compile(rb"\r?\n\r?\n")
 
 
 class Cooldown:
@@ -138,6 +154,11 @@ class Router:
 
             self._served_by(dep, outcome, resp.status_code)
             outcome.latency_s = time.perf_counter() - started
+            if resp.status_code == 200:
+                try:
+                    outcome.record_usage(resp.json().get("usage"))
+                except ValueError, AttributeError:
+                    log.warning("could not read usage from %s's response", dep.backend)
             return Response(
                 resp.content,
                 status_code=resp.status_code,
@@ -156,7 +177,15 @@ class Router:
 
         Fallback is only possible until the first byte reaches the client;
         after that, the response is committed to one backend.
+
+        The backend is always asked for a final usage chunk, so tokens can be
+        accounted for. That chunk is only forwarded if the client asked for it too.
         """
+        options = body.get("stream_options")
+        options = options if isinstance(options, dict) else {}
+        forward_usage = bool(options.get("include_usage"))
+        body = {**body, "stream_options": {**options, "include_usage": True}}
+
         for dep in chain:
             outcome.attempts += 1
             request = build_request(self.client, self.routes.backends[dep.backend], dep, body)
@@ -195,7 +224,7 @@ class Router:
             self._served_by(dep, outcome, resp.status_code)
             outcome.ttfb_s = time.perf_counter() - started
             return StreamingResponse(
-                self._relay(resp, first, chunks, outcome, started),
+                self._relay(resp, first, chunks, outcome, started, forward_usage),
                 status_code=resp.status_code,
                 media_type="text/event-stream",
                 headers=self._headers(outcome),
@@ -211,12 +240,28 @@ class Router:
         chunks: AsyncIterator[bytes],
         outcome: RequestOutcome,
         started: float,
+        forward_usage: bool,
     ) -> AsyncIterator[bytes]:
+        """Forward the stream event by event, reading token usage on the way."""
         outcome.status = "client_disconnected"  # overwritten unless the client goes away
+        pending = b""
         try:
-            yield first
-            async for chunk in chunks:
-                yield chunk
+            chunk = first
+            while True:
+                pending += chunk
+                *events, pending = SSE_EVENT_END.split(pending)
+                out = b"".join(
+                    event + b"\n\n"
+                    for event in events
+                    if self._keep_event(event, outcome, forward_usage)
+                )
+                if out:
+                    yield out
+                chunk = await anext(chunks, None)
+                if chunk is None:
+                    break
+            if pending.strip():
+                yield pending
             outcome.status = "ok"
         except httpx2.TransportError as exc:
             log.warning("stream from %s broke mid-response: %r", outcome.backend, exc)
@@ -229,6 +274,20 @@ class Router:
             await resp.aclose()
             outcome.latency_s = time.perf_counter() - started
             await self._run_hooks(outcome)
+
+    @staticmethod
+    def _keep_event(event: bytes, outcome: RequestOutcome, forward_usage: bool) -> bool:
+        """Record usage from an SSE event; drop usage-only events the client didn't ask for."""
+        if not event.startswith(b"data:") or b'"usage"' not in event:
+            return True
+        try:
+            data = json.loads(event[5:])
+        except ValueError:
+            return True
+        if not isinstance(data, dict) or not data.get("usage"):
+            return True
+        outcome.record_usage(data["usage"])
+        return forward_usage or bool(data.get("choices"))
 
     def _failed(self, dep: Deployment, outcome: RequestOutcome, reason: object) -> None:
         log.warning("deployment %s/%s failed: %s", dep.backend, dep.model, reason)

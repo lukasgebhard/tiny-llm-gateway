@@ -16,6 +16,7 @@ from app.config import RoutesConfig, Settings, load_routes
 from app.db import init_schema, make_engine, make_sessionmaker
 from app.errors import GatewayError, bad_request
 from app.routing import Cooldown, Hook, Router
+from app.usage import usage_recorder
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -39,9 +40,15 @@ def create_app(
         await init_schema(engine)
         timeout = httpx2.Timeout(settings.read_timeout, connect=settings.connect_timeout)
         async with httpx2.AsyncClient(timeout=timeout, transport=transport) as client:
+            sessionmaker = make_sessionmaker(engine)
             app.state.settings = settings
-            app.state.sessionmaker = make_sessionmaker(engine)
-            app.state.router = Router(routes, client, Cooldown(settings.cooldown_seconds), hooks)
+            app.state.sessionmaker = sessionmaker
+            app.state.router = Router(
+                routes,
+                client,
+                Cooldown(settings.cooldown_seconds),
+                [usage_recorder(sessionmaker), *hooks],
+            )
             yield
         await engine.dispose()
 

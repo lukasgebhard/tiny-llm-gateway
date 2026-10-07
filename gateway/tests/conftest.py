@@ -27,6 +27,8 @@ ROUTES = RoutesConfig(
 )
 
 STREAM_CHUNKS = ["Hello", " from", " upstream"]
+USAGE = {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4}
+STREAM_USAGE = {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
 
 
 def completion(model: str) -> dict:
@@ -35,19 +37,26 @@ def completion(model: str) -> dict:
         "object": "chat.completion",
         "model": model,
         "choices": [{"index": 0, "message": {"role": "assistant", "content": "Hi"}}],
-        "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4},
+        "usage": USAGE,
     }
 
 
-def sse_events(model: str) -> list[bytes]:
-    events = [
-        {
+def sse_events(model: str, include_usage: bool) -> list[bytes]:
+    """Like OpenAI: with include_usage, every chunk has "usage": null and a final
+    chunk with empty choices carries the token counts."""
+    events = []
+    for text in STREAM_CHUNKS:
+        event = {
             "object": "chat.completion.chunk",
             "model": model,
             "choices": [{"index": 0, "delta": {"content": text}}],
         }
-        for text in STREAM_CHUNKS
-    ]
+        if include_usage:
+            event["usage"] = None
+        events.append(event)
+    if include_usage:
+        last = {"object": "chat.completion.chunk", "model": model, "choices": []}
+        events.append({**last, "usage": STREAM_USAGE})
     return [f"data: {json.dumps(e)}\n\n".encode() for e in events] + [b"data: [DONE]\n\n"]
 
 
@@ -62,7 +71,8 @@ class FakeUpstreams:
     """Fake OpenAI-compatible backends, addressed by host name.
 
     `mode[host]` selects the behaviour: ok, refuse, 400, 429, 500, timeout,
-    break-at-start (stream dies before the first chunk) or break-mid-stream.
+    break-at-start (stream dies before the first chunk), break-mid-stream or
+    fragmented (stream arrives in small pieces that split events).
     """
 
     def __init__(self):
@@ -89,10 +99,15 @@ class FakeUpstreams:
         if not body.get("stream"):
             return httpx2.Response(200, json=completion(body["model"]))
         break_after = {"break-at-start": 0, "break-mid-stream": 2}.get(mode)
+        include_usage = bool((body.get("stream_options") or {}).get("include_usage"))
+        events = sse_events(body["model"], include_usage)
+        if mode == "fragmented":  # events split across network reads, as over real TCP
+            data = b"".join(events)
+            events = [data[i : i + 7] for i in range(0, len(data), 7)]
         return httpx2.Response(
             200,
             headers={"content-type": "text/event-stream"},
-            content=stream_body(sse_events(body["model"]), break_after),
+            content=stream_body(events, break_after),
         )
 
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # End-to-end demo on minikube: local model, external model, per-key access
-# policy and automatic fallback when the local model server goes down.
+# policy, automatic fallback when the local model server goes down, and the
+# resulting usage report.
 #
 # Usage: scripts/demo.sh [--mock]
 #   --mock          use the mock backend instead of vLLM (no model download)
@@ -78,6 +79,20 @@ models() {
   curl -s "$BASE/v1/models" -H "Authorization: Bearer $1" | jq -r '[.data[].id] | join(", ")'
 }
 
+# Prints the usage report since the start of this run, grouped by key or backend.
+usage_table() {
+  local group=$1
+  printf '  %-16s %8s %6s %9s %13s %17s %11s\n' "$group" requests errors fallbacks \
+    prompt_tokens completion_tokens avg_latency
+  curl -s "$BASE/admin/usage?group_by=$group&since=$SINCE" -H "Authorization: Bearer $MASTER_KEY" |
+    jq -r --arg g "$group" '.data[] | [.[$g] // "-", .requests, .errors, .fallbacks,
+      .prompt_tokens, .completion_tokens, "\(.avg_latency_ms) ms"] | @tsv' |
+    while IFS=$'\t' read -r name requests errors fallbacks prompt completion latency; do
+      printf '  %-16s %8s %6s %9s %13s %17s %11s\n' "$name" "$requests" "$errors" "$fallbacks" \
+        "$prompt" "$completion" "$latency"
+    done
+}
+
 step "1. Cluster and gateway image"
 minikube status >/dev/null 2>&1 || minikube start --cpus=6 --memory=12g
 BUILD_LOG=$(mktemp)
@@ -118,6 +133,7 @@ pause
 
 step "3. Two API keys: team-a may use external models, team-b may not"
 RUN=$(date +%H%M%S)
+SINCE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 KEY_A=$(create_key "team-a-$RUN" true)
 KEY_B=$(create_key "team-b-$RUN" false)
 echo "team-a-$RUN sees: $(models "$KEY_A")"
@@ -153,6 +169,12 @@ chat "$KEY_B" qwen3
 
 kubectl scale "deploy/$RELEASE-$LOCAL_BACKEND" --replicas=1 >/dev/null
 note "Scaled $RELEASE-$LOCAL_BACKEND back to 1 replica; it restarts in the background."
+pause
+
+step "7. Usage report for this run (GET /admin/usage)"
+usage_table key
+echo
+usage_table backend
 
 step "Done"
 echo "To keep exploring: kubectl port-forward svc/$RELEASE-gateway $PORT:8080"

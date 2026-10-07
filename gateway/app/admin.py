@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from app.auth import generate_key, hash_key, require_master_key
 from app.errors import GatewayError
 from app.models import ApiKey
+from app.usage import GroupBy, summarize
 
 router = APIRouter(prefix="/admin", dependencies=[Depends(require_master_key)])
 
@@ -65,6 +66,14 @@ async def list_keys(request: Request) -> list[KeyInfo]:
     async with request.app.state.sessionmaker() as session:
         keys = await session.scalars(select(ApiKey).order_by(ApiKey.id))
         return [KeyInfo.model_validate(k, from_attributes=True) for k in keys]
+
+
+@router.get("/usage")
+async def usage(request: Request, group_by: GroupBy = "key", since: datetime | None = None):
+    """Requests, errors, fallbacks and tokens, grouped by API key, model alias or backend."""
+    async with request.app.state.sessionmaker() as session:
+        rows = await summarize(session, group_by, since)
+    return {"group_by": group_by, "since": since, "data": rows}
 
 
 @router.patch("/keys/{key_id}")
