@@ -124,8 +124,8 @@ echo
 kubectl port-forward "svc/$RELEASE-gateway" "$PORT:8080" >/dev/null 2>&1 &
 PF_PID=$!
 trap 'kill $PF_PID 2>/dev/null || true' EXIT
-for _ in $(seq 30); do curl -sf "$BASE/healthz" >/dev/null && break; sleep 1; done
-curl -sf "$BASE/healthz" >/dev/null ||
+for _ in $(seq 30); do curl -sf "$BASE/livez" >/dev/null && break; sleep 1; done
+curl -sf "$BASE/livez" >/dev/null ||
   { echo "Gateway not reachable on port $PORT (in use? set DEMO_PORT)" >&2; exit 1; }
 MASTER_KEY=$(kubectl get secret "$RELEASE" -o jsonpath='{.data.master-key}' | base64 -d)
 note "Gateway forwarded to $BASE"

@@ -89,7 +89,7 @@ spec:
             periodSeconds: 5
           livenessProbe:
             httpGet:
-              path: /healthz
+              path: /livez
               port: http
             periodSeconds: 10
           lifecycle:

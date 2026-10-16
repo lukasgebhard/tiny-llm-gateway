@@ -97,7 +97,7 @@ Notes:
 | `GET /admin/keys` | Master key | List keys (without secrets) |
 | `PATCH /admin/keys/{id}` | Master key | Change `allow_external` or `active` |
 | `GET /admin/usage` | Master key | Usage report; see [Usage accounting](#usage-accounting) |
-| `GET /healthz` | none | Liveness |
+| `GET /livez` | none | Liveness |
 | `GET /readyz` | none | Readiness (database reachable) |
 
 API keys are stored as SHA-256 hashes. Errors use OpenAI's format, `{"error": {"message", "type", "code"}}`, so SDKs surface them properly.

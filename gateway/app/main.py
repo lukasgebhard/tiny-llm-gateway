@@ -80,8 +80,8 @@ def create_app(
             ],
         }
 
-    @app.get("/healthz")
-    async def healthz():
+    @app.get("/livez")
+    async def livez():
         return {"status": "ok"}
 
     @app.get("/readyz")
