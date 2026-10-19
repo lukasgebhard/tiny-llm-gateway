@@ -9,6 +9,9 @@ A small, OpenAI-compatible LLM gateway for organisations that run open-weight mo
 - **Automatic fallback.** Each model alias has an ordered list of deployments. If one fails, the gateway tries the next.
 - **External access is opt-in per API key.** Prompts sent to a cloud provider leave the organisation, so only keys with `allow_external` may reach external backends, directly or as a fallback.
 
+> [!TIP]
+> **See it in action:** the [guided demo](#guided-demo) sets up a local Kubernetes cluster with one command and walks through routing, streaming, access policies, fallback and usage reports step by step.
+
 ## How it works
 
 ```mermaid
