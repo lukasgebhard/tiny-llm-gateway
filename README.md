@@ -1,5 +1,7 @@
 # tiny-llm-gateway
 
+[![CI](https://github.com/lukasgebhard/tiny-llm-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/lukasgebhard/tiny-llm-gateway/actions/workflows/ci.yml)
+
 A small, OpenAI-compatible LLM gateway for organisations that run open-weight models on their own hardware and want *controlled* access to cloud models on top.
 
 - **One API for all models.** Clients use the standard OpenAI API (including streaming) and pick a model by alias. The gateway routes each request to a self-hosted backend (e.g. vLLM) or an external provider (e.g. OpenAI).
@@ -315,9 +317,12 @@ uv run ruff check . && uv run ruff format --check .
 
 The tests need no running services: backends are faked with `httpx2.MockTransport` and the database is a temporary SQLite file. They cover the access policy, fallback on each kind of failure, cooldown ordering, streaming (including fallback before the first chunk, mid-stream failures and events split across network reads), usage accounting, auth and config loading.
 
+[GitHub Actions](.github/workflows/ci.yml) runs the linter and the tests on every push and pull request, lints and renders the Helm chart with both values files, and builds the Docker image.
+
 ## Project layout
 
 ```
+.github/workflows/     CI: lint, tests, Helm chart, Docker image
 chart/                 Helm chart (gateway, vLLM, mock backend, PostgreSQL)
   values.yaml          defaults: vLLM on CPU, then OpenAI
   values-mock.yaml     lightweight variant with the mock backend (localBackend: mock)
