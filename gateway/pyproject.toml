@@ -2,6 +2,7 @@
 name = "tiny-llm-gateway"
 version = "0.1.0"
 description = "A small OpenAI-compatible LLM gateway with routing, fallback and per-key access policies"
+license = "MIT"
 requires-python = ">=3.14"
 dependencies = [
     "asyncpg>=0.30",

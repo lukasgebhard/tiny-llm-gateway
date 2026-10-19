@@ -1,6 +1,7 @@
 # tiny-llm-gateway
 
 [![CI](https://github.com/lukasgebhard/tiny-llm-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/lukasgebhard/tiny-llm-gateway/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 A small, OpenAI-compatible LLM gateway for organisations that run open-weight models on their own hardware and want *controlled* access to cloud models on top.
 
@@ -342,3 +343,7 @@ gateway/
 scripts/
   demo.sh              guided end-to-end demo on minikube
 ```
+
+## License
+
+[MIT](LICENSE)
